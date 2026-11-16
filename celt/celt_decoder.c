@@ -50,6 +50,7 @@
 #include <stdarg.h>
 #include "celt_lpc.h"
 #include "vq.h"
+#include "bitstats.h"
 
 #ifdef ENABLE_DEEP_PLC
 #include "lpcnet.h"
@@ -531,6 +532,28 @@ void celt_synthesis(const CELTMode *mode, celt_norm *X, celt_sig * out_syn[],
    } while (++c<CC);
    RESTORE_STACK;
 }
+
+
+#ifdef OPUS_BITSTATS
+#include <stdio.h>
+#include <stdlib.h>
+bitstats_t opus_bitstats;
+static void opus_bitstats_dump(void)
+{
+   static const char *names[BS_NCAT] = {"header(silence/pitch/transient/intra)","coarse energy","tf","spread+dynalloc+trim","alloc(skip/intensity/dual)","fine energy","bands (PVQ+theta+other)","anticollapse+finalise"};
+   bitstats_t *b=&opus_bitstats; double tot=0; int i;
+   if (!b->frames || !getenv("OPUS_BITSTATS")) return;
+   for(i=0;i<BS_NCAT;i++) tot+=b->cat[i];
+   fprintf(stderr,"\n== CELT bit breakdown: %lld frames, %.2f s, %.2f kbps (counted), transient frames %.1f%%, silent %lld ==\n",
+      b->frames,b->samples48/48000.,tot/8./(b->samples48/48000.)/1000.,100.*b->transients/b->frames,b->silent);
+   fprintf(stderr,"LM hist (2.5/5/10/20ms): %lld %lld %lld %lld\n",b->lm_hist[0],b->lm_hist[1],b->lm_hist[2],b->lm_hist[3]);
+   for(i=0;i<BS_NCAT;i++) fprintf(stderr,"%-40s %6.2f%%  %7.2f kbps\n",names[i],100.*b->cat[i]/tot,b->cat[i]/8./(b->samples48/48000.)/1000.);
+   fprintf(stderr,"  of which PVQ pulses                    %6.2f%%\n  of which theta/split/inv               %6.2f%%\n",100.*b->pulses/tot,100.*b->theta/tot);
+   fprintf(stderr,"band: pulses%% / theta%% of total\n");
+   for(i=0;i<21;i++) fprintf(stderr," b%02d %5.2f %5.2f\n",i,100.*b->band_pulses[i]/tot,100.*b->band_theta[i]/tot);
+}
+void opus_bitstats_register(void){ if(!opus_bitstats.registered){opus_bitstats.registered=1; atexit(opus_bitstats_dump);} }
+#endif
 
 static void tf_decode(int start, int end, int isTransient, int *tf_res, int LM, ec_dec *dec)
 {
@@ -1417,6 +1440,7 @@ int celt_decode_with_ec_dred(CELTDecoder * OPUS_RESTRICT st, const unsigned char
 
    total_bits = len*8;
    tell = ec_tell(dec);
+   BS_START(dec);
 
    if (tell >= total_bits)
       silence = 1;
@@ -1495,12 +1519,15 @@ int celt_decode_with_ec_dred(CELTDecoder * OPUS_RESTRICT st, const unsigned char
          }
       } while (++c<2);
    }
+   BS_MARK(dec,BS_HEADER);
    /* Get band energies */
    unquant_coarse_energy(mode, start, end, oldBandE,
          intra_ener, dec, C, LM);
+   BS_MARK(dec,BS_COARSE);
 
    ALLOC(tf_res, nbEBands, int);
    tf_decode(start, end, isTransient, tf_res, LM, dec);
+   BS_MARK(dec,BS_TF);
 
    tell = ec_tell(dec);
    spread_decision = SPREAD_NORMAL;
@@ -1555,11 +1582,14 @@ int celt_decode_with_ec_dred(CELTDecoder * OPUS_RESTRICT st, const unsigned char
    ALLOC(pulses, nbEBands, int);
    ALLOC(fine_priority, nbEBands, int);
 
+   BS_MARK(dec,BS_SIDE);
    codedBands = clt_compute_allocation(mode, start, end, offsets, cap,
          alloc_trim, &intensity, &dual_stereo, bits, &balance, pulses,
          fine_quant, fine_priority, C, LM, dec, 0, 0, 0);
+   BS_MARK(dec,BS_ALLOC);
 
    unquant_fine_energy(mode, start, end, oldBandE, NULL, fine_quant, dec, C);
+   BS_MARK(dec,BS_FINE);
 
    ALLOC(X, C*N, celt_norm);   /**< Interleaved normalised MDCTs */
 
@@ -1620,12 +1650,17 @@ int celt_decode_with_ec_dred(CELTDecoder * OPUS_RESTRICT st, const unsigned char
    }
 #endif
 
+   BS_MARK(dec,BS_BANDS);
+#ifdef OPUS_BITSTATS
+   opus_bitstats.frames++; opus_bitstats.samples48+=N; opus_bitstats.transients+=isTransient; opus_bitstats.lm_hist[LM]++;
+#endif
    if (anti_collapse_rsv > 0)
    {
       anti_collapse_on = ec_dec_bits(dec, 1);
    }
    unquant_energy_finalise(mode, start, end, (qext_bytes > 0) ? NULL : oldBandE,
          fine_quant, fine_priority, len*8-ec_tell(dec), dec, C);
+   BS_MARK(dec,BS_FINAL);
    if (anti_collapse_on)
       anti_collapse(mode, X, collapse_masks, LM, C, N,
             start, end, oldBandE, oldLogE, oldLogE2, pulses, st->rng, 0, st->arch);

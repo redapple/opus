@@ -35,6 +35,7 @@
 #include "bands.h"
 #include "modes.h"
 #include "vq.h"
+#include "bitstats.h"
 #include "cwrs.h"
 #include "stack_alloc.h"
 #include "os_support.h"
@@ -900,6 +901,9 @@ static void compute_theta(struct band_ctx *ctx, struct split_ctx *sctx,
    }
    qalloc = ec_tell_frac(ec) - tell;
    *b -= qalloc;
+#ifdef OPUS_BITSTATS
+   if (!ctx->encode && ec==ctx->ec) { opus_bitstats.theta+=qalloc; if(ctx->i<32) opus_bitstats.band_theta[ctx->i]+=qalloc; }
+#endif
 
    if (itheta == 0)
    {
@@ -1115,8 +1119,14 @@ static unsigned quant_partition(struct band_ctx *ctx, celt_norm *X,
                            ARG_QEXT(ctx->ext_ec) ARG_QEXT(extra_bits),
                            ctx->arch);
          } else {
+#ifdef OPUS_BITSTATS
+            opus_int32 _bs0=ec_tell_frac(ec);
+#endif
             cm = alg_unquant(X, N, K, spread, B, ec, gain
                              ARG_QEXT(ctx->ext_ec) ARG_QEXT(extra_bits));
+#ifdef OPUS_BITSTATS
+            { opus_int32 d=ec_tell_frac(ec)-_bs0; opus_bitstats.pulses+=d; if(ctx->i<32) opus_bitstats.band_pulses[ctx->i]+=d; }
+#endif
          }
 #ifdef ENABLE_QEXT
       } else if (ext_b > 2*N<<BITRES)
