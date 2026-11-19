@@ -264,6 +264,63 @@ void opus_custom_encoder_destroy(CELTEncoder *st)
 #endif /* CUSTOM_MODES */
 
 
+#ifndef FIXED_POINT
+/* Float-only: the high-pass filter, forward-masking pass and backward-masking
+   pass of transient_analysis() for two channels in lock-step. The two
+   channels are independent recursions, so running them side by side hides the
+   latency of each chain. Every operation is the same, in the same order, as
+   in the single-channel code, so the results are bit-identical. */
+static void transient_filters_x2(const opus_val32 *in0, const opus_val32 *in1,
+      opus_val16 *tmp0, opus_val16 *tmp1, int len, opus_val16 forward_decay,
+      opus_val32 *mean, opus_val16 *maxE)
+{
+   int i, len2 = len/2;
+   opus_val32 a0=0, a1=0, b0=0, b1=0;   /* mem0, mem1 of each channel */
+   opus_val32 m0, m1;
+   opus_val16 e0, e1;
+   for (i=0;i<len;i++)
+   {
+      float x_0 = in0[i], x_1 = in1[i];
+      float y_0 = a0 + x_0, y_1 = a1 + x_1;
+      float o0 = a0, o1 = a1;
+      a0 = a0 - x_0 + .5f*b0;
+      a1 = a1 - x_1 + .5f*b1;
+      b0 = x_0 - o0;
+      b1 = x_1 - o1;
+      tmp0[i] = y_0;
+      tmp1[i] = y_1;
+   }
+   OPUS_CLEAR(tmp0, 12);
+   OPUS_CLEAR(tmp1, 12);
+   m0 = m1 = 0;
+   a0 = a1 = 0;
+   for (i=0;i<len2;i++)
+   {
+      float x2_0 = tmp0[2*i]*tmp0[2*i] + tmp0[2*i+1]*tmp0[2*i+1];
+      float x2_1 = tmp1[2*i]*tmp1[2*i] + tmp1[2*i+1]*tmp1[2*i+1];
+      m0 += x2_0;
+      m1 += x2_1;
+      a0 = x2_0 + (1.f-forward_decay)*a0;
+      a1 = x2_1 + (1.f-forward_decay)*a1;
+      tmp0[i] = forward_decay*a0;
+      tmp1[i] = forward_decay*a1;
+   }
+   a0 = a1 = 0;
+   e0 = e1 = 0;
+   for (i=len2-1;i>=0;i--)
+   {
+      a0 = tmp0[i] + 0.875f*a0;
+      a1 = tmp1[i] + 0.875f*a1;
+      tmp0[i] = 0.125f*a0;
+      tmp1[i] = 0.125f*a1;
+      e0 = MAX16(e0, 0.125f*a0);
+      e1 = MAX16(e1, 0.125f*a1);
+   }
+   mean[0] = m0; mean[1] = m1;
+   maxE[0] = e0; maxE[1] = e1;
+}
+#endif
+
 static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int C,
                               opus_val16 *tf_estimate, int *tf_chan, int allow_weak_transients,
                               int *weak_transient, opus_val16 tone_freq, opus_val32 toneishness)
@@ -276,6 +333,11 @@ static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int 
    int c;
    opus_val16 tf_max;
    int len2;
+#ifndef FIXED_POINT
+   VARDECL(opus_val16, tmp2);
+   opus_val32 pair_mean[2];
+   opus_val16 pair_maxE[2];
+#endif
    /* Forward masking: 6.7 dB/ms. */
 #ifdef FIXED_POINT
    int forward_shift = 4;
@@ -298,6 +360,9 @@ static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int 
    int in_shift = IMAX(0, celt_ilog2(1+celt_maxabs32(in, C*len))-14);
 #endif
    ALLOC(tmp, len, opus_val16);
+#ifndef FIXED_POINT
+   ALLOC(tmp2, C==2 ? len : 1, opus_val16);
+#endif
 
    *weak_transient = 0;
    /* For lower bitrates, let's be more conservative and have a forward masking
@@ -319,85 +384,99 @@ static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int 
       opus_int32 unmask=0;
       opus_val32 norm;
       opus_val16 maxE;
-      mem0=0;
-      mem1=0;
-      /* High-pass filter: (1 - 2*z^-1 + z^-2) / (1 - z^-1 + .5*z^-2) */
-      for (i=0;i<len;i++)
-      {
+      opus_val16 *tp = tmp;
 #ifndef FIXED_POINT
-         float mem00;
-#endif
-         opus_val32 x,y;
-         x = SHR32(in[i+c*len],in_shift);
-         y = ADD32(mem0, x);
-#ifdef FIXED_POINT
-         mem0 = mem1 + y - SHL32(x,1);
-         mem1 = x - SHR32(y,1);
-#else
-         /* Original code:
-         mem0 = mem1 + y - 2*x;
-         mem1 = x - .5f*y;
-         Modified code to shorten dependency chains: */
-         mem00=mem0;
-         mem0 = mem0 - x + .5f*mem1;
-         mem1 =  x - mem00;
-#endif
-         tmp[i] = SROUND16(y, 2);
-         /*printf("%f ", tmp[i]);*/
-      }
-      /*printf("\n");*/
-      /* First few samples are bad because we don't propagate the memory */
-      OPUS_CLEAR(tmp, 12);
-
-#ifdef FIXED_POINT
-      /* Normalize tmp to max range */
+      if (C==2)
       {
-         int shift=0;
-         shift = 14-celt_ilog2(MAX16(1, celt_maxabs16(tmp, len)));
-         if (shift!=0)
+         if (c==0)
+            transient_filters_x2(in, in+len, tmp, tmp2, len, forward_decay, pair_mean, pair_maxE);
+         tp = c==0 ? tmp : tmp2;
+         mean = pair_mean[c];
+         maxE = pair_maxE[c];
+      }
+      else
+#endif
+      {
+         mem0=0;
+         mem1=0;
+         /* High-pass filter: (1 - 2*z^-1 + z^-2) / (1 - z^-1 + .5*z^-2) */
+         for (i=0;i<len;i++)
          {
-            for (i=0;i<len;i++)
-               tmp[i] = SHL16(tmp[i], shift);
+#ifndef FIXED_POINT
+            float mem00;
+#endif
+            opus_val32 x,y;
+            x = SHR32(in[i+c*len],in_shift);
+            y = ADD32(mem0, x);
+#ifdef FIXED_POINT
+            mem0 = mem1 + y - SHL32(x,1);
+            mem1 = x - SHR32(y,1);
+#else
+            /* Original code:
+            mem0 = mem1 + y - 2*x;
+            mem1 = x - .5f*y;
+            Modified code to shorten dependency chains: */
+            mem00=mem0;
+            mem0 = mem0 - x + .5f*mem1;
+            mem1 =  x - mem00;
+#endif
+            tmp[i] = SROUND16(y, 2);
+            /*printf("%f ", tmp[i]);*/
          }
-      }
+         /*printf("\n");*/
+         /* First few samples are bad because we don't propagate the memory */
+         OPUS_CLEAR(tmp, 12);
+
+#ifdef FIXED_POINT
+         /* Normalize tmp to max range */
+         {
+            int shift=0;
+            shift = 14-celt_ilog2(MAX16(1, celt_maxabs16(tmp, len)));
+            if (shift!=0)
+            {
+               for (i=0;i<len;i++)
+                  tmp[i] = SHL16(tmp[i], shift);
+            }
+         }
 #endif
 
-      mean=0;
-      mem0=0;
-      /* Grouping by two to reduce complexity */
-      /* Forward pass to compute the post-echo threshold*/
-      for (i=0;i<len2;i++)
-      {
-         opus_val32 x2 = PSHR32(MULT16_16(tmp[2*i],tmp[2*i]) + MULT16_16(tmp[2*i+1],tmp[2*i+1]),4);
-         mean += PSHR32(x2, 12);
+         mean=0;
+         mem0=0;
+         /* Grouping by two to reduce complexity */
+         /* Forward pass to compute the post-echo threshold*/
+         for (i=0;i<len2;i++)
+         {
+            opus_val32 x2 = PSHR32(MULT16_16(tmp[2*i],tmp[2*i]) + MULT16_16(tmp[2*i+1],tmp[2*i+1]),4);
+            mean += PSHR32(x2, 12);
 #ifdef FIXED_POINT
-         /* FIXME: Use PSHR16() instead */
-         mem0 = mem0 + PSHR32(x2-mem0,forward_shift);
-         tmp[i] = PSHR32(mem0, 12);
+            /* FIXME: Use PSHR16() instead */
+            mem0 = mem0 + PSHR32(x2-mem0,forward_shift);
+            tmp[i] = PSHR32(mem0, 12);
 #else
-         mem0 = x2 + (1.f-forward_decay)*mem0;
-         tmp[i] = forward_decay*mem0;
+            mem0 = x2 + (1.f-forward_decay)*mem0;
+            tmp[i] = forward_decay*mem0;
 #endif
-      }
+         }
 
-      mem0=0;
-      maxE=0;
-      /* Backward pass to compute the pre-echo threshold */
-      for (i=len2-1;i>=0;i--)
-      {
-         /* Backward masking: 13.9 dB/ms. */
+         mem0=0;
+         maxE=0;
+         /* Backward pass to compute the pre-echo threshold */
+         for (i=len2-1;i>=0;i--)
+         {
+            /* Backward masking: 13.9 dB/ms. */
 #ifdef FIXED_POINT
-         /* FIXME: Use PSHR16() instead */
-         mem0 = mem0 + PSHR32(SHL32(tmp[i],4)-mem0,3);
-         tmp[i] = PSHR32(mem0, 4);
-         maxE = MAX16(maxE, tmp[i]);
+            /* FIXME: Use PSHR16() instead */
+            mem0 = mem0 + PSHR32(SHL32(tmp[i],4)-mem0,3);
+            tmp[i] = PSHR32(mem0, 4);
+            maxE = MAX16(maxE, tmp[i]);
 #else
-         mem0 = tmp[i] + 0.875f*mem0;
-         tmp[i] = 0.125f*mem0;
-         maxE = MAX16(maxE, 0.125f*mem0);
+            mem0 = tmp[i] + 0.875f*mem0;
+            tmp[i] = 0.125f*mem0;
+            maxE = MAX16(maxE, 0.125f*mem0);
 #endif
+         }
+         /*for (i=0;i<len2;i++)printf("%f ", tmp[i]/mean);printf("\n");*/
       }
-      /*for (i=0;i<len2;i++)printf("%f ", tmp[i]/mean);printf("\n");*/
 
       /* Compute the ratio of the "frame energy" over the harmonic mean of the energy.
          This essentially corresponds to a bitrate-normalized temporal noise-to-mask
@@ -420,15 +499,15 @@ static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int 
          before it does any damage later on. If these asserts are disabled (no hardening), then the table
          lookup a few lines below (id = ...) is likely to crash dur to an out-of-bounds read. DO NOT FIX
          that crash on NaN since it could result in a worse issue later on. */
-      celt_assert(!celt_isnan(tmp[0]));
+      celt_assert(!celt_isnan(tp[0]));
       celt_assert(!celt_isnan(norm));
       for (i=12;i<len2-5;i+=4)
       {
          int id;
 #ifdef FIXED_POINT
-         id = MAX32(0,MIN32(127,MULT16_32_Q15(tmp[i]+EPSILON,norm))); /* Do not round to nearest */
+         id = MAX32(0,MIN32(127,MULT16_32_Q15(tp[i]+EPSILON,norm))); /* Do not round to nearest */
 #else
-         id = (int)MAX32(0,MIN32(127,floor(64*norm*(tmp[i]+EPSILON)))); /* Do not round to nearest */
+         id = (int)MAX32(0,MIN32(127,floor(64*norm*(tp[i]+EPSILON)))); /* Do not round to nearest */
 #endif
          unmask += inv_table[id];
       }
