@@ -52,6 +52,10 @@
 #include "os_support.h"
 #include "mathops.h"
 #include "stack_alloc.h"
+#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#include "x86/mdct_avx2.h"
+#endif
 
 #if defined(FIXED_POINT) && defined(__mips) && __mips == 32
 #include "mips/mdct_mipsr1.h"
@@ -206,6 +210,14 @@ void clt_mdct_forward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scal
 #ifdef FIXED_POINT
       opus_val32 maxval=1;
 #endif
+#ifdef MDCT_HAVE_AVX2
+      if (kiss_fft_use_avx2())
+      {
+         clt_mdct_prerot_avx2(f, t, scale, st->bitrev, f2, N4);
+         i = N4;
+      }
+      else
+#endif
       for(i=0;i<N4;i++)
       {
          kiss_fft_cpx yc;
@@ -255,6 +267,14 @@ void clt_mdct_forward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scal
       kiss_fft_scalar * OPUS_RESTRICT yp2 = out+stride*(N2-1);
       const kiss_twiddle_scalar *t = &trig[0];
       /* Temp pointers to make it really clear to the compiler what we're doing */
+#ifdef MDCT_HAVE_AVX2
+      if (stride == 1 && kiss_fft_use_avx2())
+      {
+         clt_mdct_postrot_avx2(fp, t, out, N4);
+         i = N4;
+      }
+      else
+#endif
       for(i=0;i<N4;i++)
       {
          kiss_fft_scalar yr, yi;

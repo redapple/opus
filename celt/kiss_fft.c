@@ -593,7 +593,7 @@ static void fft_downshift(kiss_fft_cpx *x, int N, int *total, int step) {
 #ifdef KISS_FFT_HAVE_AVX2
 /* opus_fft_impl() does not receive the arch, so cache the CPU check.
    The race on first use is benign: every thread writes the same value. */
-static int kiss_fft_use_avx2(void)
+int kiss_fft_use_avx2(void)
 {
 #if defined(OPUS_X86_PRESUME_AVX2)
    return 1;
