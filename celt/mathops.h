@@ -83,11 +83,21 @@ static OPUS_INLINE float fast_atan2f(float y, float x) {
 
 
 #ifndef OVERRIDE_CELT_MAXABS16
+#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+/* Defined in kiss_fft.c and x86/mathops_avx2.c. */
+int kiss_fft_use_avx2(void);
+float celt_maxabs16_avx2(const float *x, int len);
+#define CELT_MAXABS16_HAVE_AVX2 1
+#endif
 static OPUS_INLINE opus_val32 celt_maxabs16(const opus_val16 *x, int len)
 {
    int i;
    opus_val16 maxval = 0;
    opus_val16 minval = 0;
+#ifdef CELT_MAXABS16_HAVE_AVX2
+   if (len >= 16 && kiss_fft_use_avx2())
+      return celt_maxabs16_avx2(x, len);
+#endif
    for (i=0;i<len;i++)
    {
       maxval = MAX16(maxval, x[i]);

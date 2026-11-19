@@ -40,6 +40,11 @@
 #include "os_support.h"
 #include "mathops.h"
 #include "stack_alloc.h"
+#include "cpu_support.h"
+#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#define KISS_FFT_HAVE_AVX2 1
+#endif
 
 #if defined(CUSTOM_MODES) || defined(ENABLE_OPUS_CUSTOM_API)
 #define OPUS_CUSTOM 1
@@ -585,6 +590,25 @@ static void fft_downshift(kiss_fft_cpx *x, int N, int *total, int step) {
 #define fft_downshift(x, N, total, step)
 #endif
 
+#ifdef KISS_FFT_HAVE_AVX2
+/* opus_fft_impl() does not receive the arch, so cache the CPU check.
+   The race on first use is benign: every thread writes the same value. */
+int kiss_fft_use_avx2(void)
+{
+#if defined(OPUS_X86_PRESUME_AVX2)
+   return 1;
+#else
+   static volatile int cached = -1;
+   int v = cached;
+   if (v < 0) {
+      v = (opus_select_arch() & OPUS_ARCHMASK) >= 4;
+      cached = v;
+   }
+   return v;
+#endif
+}
+#endif
+
 void opus_fft_impl(const kiss_fft_state *st,kiss_fft_cpx *fout ARG_FIXED(int downshift))
 {
     int m2, m;
@@ -606,6 +630,35 @@ void opus_fft_impl(const kiss_fft_state *st,kiss_fft_cpx *fout ARG_FIXED(int dow
        L++;
     } while(m!=1);
     m = st->factors[2*L-1];
+#ifdef KISS_FFT_HAVE_AVX2
+    if (kiss_fft_use_avx2())
+    {
+       for (i=L-1;i>=0;i--)
+       {
+          int p_ = st->factors[2*i];
+          m2 = i!=0 ? st->factors[2*i-1] : 1;
+          if (p_==4 && (m==1 || (m&3)==0))
+             kf_bfly4_avx2(fout,fstride[i]<<shift,st,m, fstride[i], m2);
+          else if (p_==2 && m==4)
+             kf_bfly2_avx2(fout, fstride[i]);
+          else if (p_==3 && (m&3)==0)
+             kf_bfly3_avx2(fout,fstride[i]<<shift,st,m, fstride[i], m2);
+          else if (p_==5 && (m&3)==0)
+             kf_bfly5_avx2(fout,fstride[i]<<shift,st,m, fstride[i], m2);
+          else switch (p_)
+          {
+          case 2: kf_bfly2(fout, m, fstride[i]); break;
+          case 4: kf_bfly4(fout,fstride[i]<<shift,st,m, fstride[i], m2); break;
+ #ifndef RADIX_TWO_ONLY
+          case 3: kf_bfly3(fout,fstride[i]<<shift,st,m, fstride[i], m2); break;
+          case 5: kf_bfly5(fout,fstride[i]<<shift,st,m, fstride[i], m2); break;
+ #endif
+          }
+          m = m2;
+       }
+       return;
+    }
+#endif
     for (i=L-1;i>=0;i--)
     {
        if (i!=0)
