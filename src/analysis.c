@@ -45,6 +45,10 @@
 #include "mlp.h"
 #include "stack_alloc.h"
 #include "float_cast.h"
+#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#include "x86/analysis_avx2.h"
+#endif
 
 #ifndef M_PI
 #define M_PI 3.141592653
@@ -567,7 +571,13 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     }
 #endif
 
-    for (i=1;i<N2;i++)
+    i = 1;
+#ifdef ANALYSIS_HAVE_AVX2
+    if (kiss_fft_use_avx2())
+       i = tonality_bins_avx2(out, N2, A, dA, d2A, tonality, tonality2, noisiness,
+             40.f*16.f*pi4);
+#endif
+    for (;i<N2;i++)
     {
        float X1r, X2r, X1i, X2i;
        float angle, d_angle, d2_angle;

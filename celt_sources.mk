@@ -39,7 +39,8 @@ CELT_SOURCES_AVX2 = \
 celt/x86/pitch_avx.c \
 celt/x86/kiss_fft_avx2.c \
 celt/x86/mdct_avx2.c \
-celt/x86/mlp_avx2.c
+celt/x86/mlp_avx2.c \
+celt/x86/analysis_avx2.c
 
 CELT_SOURCES_ARM_RTCD = \
 celt/arm/armcpu.c \
