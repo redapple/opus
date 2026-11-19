@@ -42,6 +42,10 @@
 #include "rate.h"
 #include "quant_bands.h"
 #include "pitch.h"
+#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#include "x86/bands_avx2.h"
+#endif
 
 int hysteresis_decision(opus_val16 val, const opus_val16 *thresholds, const opus_val16 *hysteresis, int N, int prev)
 {
@@ -486,14 +490,22 @@ int spreading_decision(const CELTMode *m, const celt_norm *X, int *average,
    c=0; do {
       for (i=0;i<end;i++)
       {
-         int j, N, tmp=0;
+         int j, j0, N, tmp=0;
          int tcount[3] = {0,0,0};
          const celt_norm * OPUS_RESTRICT x = X+M*eBands[i]+c*N0;
          N = M*(eBands[i+1]-eBands[i]);
          if (N<=8)
             continue;
          /* Compute rough CDF of |x[j]| */
-         for (j=0;j<N;j++)
+         j0 = 0;
+#ifdef BANDS_HAVE_AVX2
+         if (kiss_fft_use_avx2())
+         {
+            spread_count_avx2(x, N, tcount);
+            j0 = N;
+         }
+#endif
+         for (j=j0;j<N;j++)
          {
             opus_val32 x2N; /* Q13 */
 
