@@ -45,6 +45,9 @@
 #include "mlp.h"
 #include "stack_alloc.h"
 #include "float_cast.h"
+#if defined(OPUS_X86_MAY_HAVE_AVX2) && !defined(FIXED_POINT)
+#include "x86/analysis_avx2.h"
+#endif
 
 #ifndef M_PI
 #define M_PI 3.141592653
@@ -567,7 +570,12 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     }
 #endif
 
-    for (i=1;i<N2;i++)
+    i=1;
+#ifdef ANALYSIS_HAVE_AVX2
+    if (OPUS_X86_USE_AVX2(tonal->arch))
+       i = tonality_bins_avx2(out, N2, A, dA, d2A, tonality, tonality2, noisiness, 40.f*16.f*pi4);
+#endif
+    for (;i<N2;i++)
     {
        float X1r, X2r, X1i, X2i;
        float angle, d_angle, d2_angle;
@@ -928,9 +936,9 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     features[23] = info->tonality_slope + 0.069216f;
     features[24] = tonal->lowECount - 0.067930f;
 
-    analysis_compute_dense(&layer0, layer_out, features);
-    analysis_compute_gru(&layer1, tonal->rnn_state, layer_out);
-    analysis_compute_dense(&layer2, frame_probs, tonal->rnn_state);
+    analysis_compute_dense(&layer0, layer_out, features, tonal->arch);
+    analysis_compute_gru(&layer1, tonal->rnn_state, layer_out, tonal->arch);
+    analysis_compute_dense(&layer2, frame_probs, tonal->rnn_state, tonal->arch);
 
     /* Probability of speech or music vs noise */
     info->activity_probability = frame_probs[1];
