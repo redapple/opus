@@ -49,6 +49,7 @@ celt/mips/kiss_fft_mipsr1.h \
 celt/mips/mdct_mipsr1.h \
 celt/mips/pitch_mipsr1.h \
 celt/x86/analysis_avx2.h \
+celt/x86/bands_avx2.h \
 celt/x86/float_avx2.h \
 celt/x86/kiss_fft_avx2.h \
 celt/x86/mdct_avx2.h \

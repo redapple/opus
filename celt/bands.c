@@ -42,6 +42,9 @@
 #include "rate.h"
 #include "quant_bands.h"
 #include "pitch.h"
+#if defined(OPUS_X86_MAY_HAVE_AVX2) && !defined(FIXED_POINT)
+#include "x86/bands_avx2.h"
+#endif
 
 int hysteresis_decision(opus_val16 val, const opus_val16 *thresholds, const opus_val16 *hysteresis, int N, int prev)
 {
@@ -469,7 +472,7 @@ static void stereo_merge(celt_norm * OPUS_RESTRICT X, celt_norm * OPUS_RESTRICT 
 /* Decide whether we should spread the pulses in the current frame */
 int spreading_decision(const CELTMode *m, const celt_norm *X, int *average,
       int last_decision, int *hf_average, int *tapset_decision, int update_hf,
-      int end, int C, int M, const int *spread_weight)
+      int end, int C, int M, const int *spread_weight, int arch)
 {
    int i, c, N0;
    int sum = 0, nbBands=0;
@@ -478,6 +481,7 @@ int spreading_decision(const CELTMode *m, const celt_norm *X, int *average,
    int hf_sum=0;
 
    celt_assert(end>0);
+   (void)arch;
 
    N0 = M*m->shortMdctSize;
 
@@ -493,6 +497,11 @@ int spreading_decision(const CELTMode *m, const celt_norm *X, int *average,
          if (N<=8)
             continue;
          /* Compute rough CDF of |x[j]| */
+#ifdef BANDS_HAVE_AVX2
+         if (OPUS_X86_USE_AVX2(arch))
+            spreading_count_avx2(x, N, tcount);
+         else
+#endif
          for (j=0;j<N;j++)
          {
             opus_val32 x2N; /* Q13 */

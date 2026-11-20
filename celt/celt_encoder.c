@@ -2338,7 +2338,7 @@ int celt_encode_with_ec(CELTEncoder * OPUS_RESTRICT st, const opus_res * pcm, in
          {
             st->spread_decision = spreading_decision(mode, X,
                   &st->tonal_average, st->spread_decision, &st->hf_average,
-                  &st->tapset_decision, pf_on&&!shortBlocks, effEnd, C, M, spread_weight);
+                  &st->tapset_decision, pf_on&&!shortBlocks, effEnd, C, M, spread_weight, st->arch);
          }
          /*printf("%d %d\n", st->tapset_decision, st->spread_decision);*/
          /*printf("%f %d %f %d\n\n", st->analysis.tonality, st->spread_decision, st->analysis.tonality_slope, st->tapset_decision);*/
