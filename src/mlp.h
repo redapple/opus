@@ -53,8 +53,8 @@ extern const AnalysisDenseLayer layer0;
 extern const AnalysisGRULayer layer1;
 extern const AnalysisDenseLayer layer2;
 
-void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, const float *input);
+void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, const float *input, int arch);
 
-void analysis_compute_gru(const AnalysisGRULayer *gru, float *state, const float *input);
+void analysis_compute_gru(const AnalysisGRULayer *gru, float *state, const float *input, int arch);
 
 #endif /* MLP_H_ */
