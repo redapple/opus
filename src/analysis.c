@@ -45,8 +45,7 @@
 #include "mlp.h"
 #include "stack_alloc.h"
 #include "float_cast.h"
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
-#include "x86/kiss_fft_avx2.h"
+#if defined(OPUS_X86_MAY_HAVE_AVX2) && !defined(FIXED_POINT)
 #include "x86/analysis_avx2.h"
 #endif
 
@@ -429,7 +428,7 @@ static const float std_feature_bias[9] = {
 #endif
 
 #ifdef FIXED_POINT
-static int is_digital_silence32(const opus_val32* pcm, int frame_size, int channels, int lsb_depth)
+static int is_digital_silence32(const opus_val32* pcm, int frame_size, int channels, int lsb_depth, int arch)
 {
    int silence = 0;
    opus_val32 sample_max = 0;
@@ -440,10 +439,11 @@ static int is_digital_silence32(const opus_val32* pcm, int frame_size, int chann
 
    silence = (sample_max == 0);
    (void)lsb_depth;
+   (void)arch;
    return silence;
 }
 #else
-#define is_digital_silence32(pcm, frame_size, channels, lsb_depth) is_digital_silence(pcm, frame_size, channels, lsb_depth)
+#define is_digital_silence32(pcm, frame_size, channels, lsb_depth, arch) is_digital_silence(pcm, frame_size, channels, lsb_depth, arch)
 #endif
 
 static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt_mode, const void *x, int len, int offset, int c1, int c2, int C, int lsb_depth, downmix_func downmix)
@@ -530,7 +530,7 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     if (tonal->write_pos>=DETECT_SIZE)
        tonal->write_pos-=DETECT_SIZE;
 
-    is_silence = is_digital_silence32(tonal->inmem, ANALYSIS_BUF_SIZE, 1, lsb_depth);
+    is_silence = is_digital_silence32(tonal->inmem, ANALYSIS_BUF_SIZE, 1, lsb_depth, tonal->arch);
 
     ALLOC(in, 480, kiss_fft_cpx);
     ALLOC(out, 480, kiss_fft_cpx);
@@ -571,11 +571,10 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     }
 #endif
 
-    i = 1;
+    i=1;
 #ifdef ANALYSIS_HAVE_AVX2
-    if (kiss_fft_use_avx2())
-       i = tonality_bins_avx2(out, N2, A, dA, d2A, tonality, tonality2, noisiness,
-             40.f*16.f*pi4);
+    if (OPUS_X86_USE_AVX2(tonal->arch))
+       i = tonality_bins_avx2(out, N2, A, dA, d2A, tonality, tonality2, noisiness, 40.f*16.f*pi4);
 #endif
     for (;i<N2;i++)
     {
@@ -938,9 +937,9 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     features[23] = info->tonality_slope + 0.069216f;
     features[24] = tonal->lowECount - 0.067930f;
 
-    analysis_compute_dense(&layer0, layer_out, features);
-    analysis_compute_gru(&layer1, tonal->rnn_state, layer_out);
-    analysis_compute_dense(&layer2, frame_probs, tonal->rnn_state);
+    analysis_compute_dense(&layer0, layer_out, features, tonal->arch);
+    analysis_compute_gru(&layer1, tonal->rnn_state, layer_out, tonal->arch);
+    analysis_compute_dense(&layer2, frame_probs, tonal->rnn_state, tonal->arch);
 
     /* Probability of speech or music vs noise */
     info->activity_probability = frame_probs[1];

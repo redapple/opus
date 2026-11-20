@@ -34,9 +34,8 @@
 #include "opus_defines.h"
 #include "arch.h"
 #include "mlp.h"
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
-#include "x86/kiss_fft_avx2.h"
-#include "x86/mlp_avx2.h"
+#if defined(OPUS_X86_MAY_HAVE_AVX2) && !defined(FIXED_POINT)
+#include "x86/analysis_avx2.h"
 #endif
 
 #define fmadd(a, b, c) ((a)*(b)+(c))
@@ -71,7 +70,7 @@ static void gemm_accum(float *out, const opus_int8 *weights, int rows, int cols,
    }
 }
 
-void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, const float *input)
+void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, const float *input, int arch)
 {
    int i;
    int N, M;
@@ -79,8 +78,10 @@ void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, cons
    M = layer->nb_inputs;
    N = layer->nb_neurons;
    stride = N;
-#ifdef MLP_HAVE_AVX2
-   if ((N&7)==0 && kiss_fft_use_avx2()) {
+   (void)arch;
+#ifdef ANALYSIS_HAVE_AVX2
+   if (OPUS_X86_USE_AVX2(arch) && (N&7)==0)
+   {
       analysis_compute_dense_avx2(layer, output, input);
       return;
    }
@@ -99,7 +100,7 @@ void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, cons
    }
 }
 
-void analysis_compute_gru(const AnalysisGRULayer *gru, float *state, const float *input)
+void analysis_compute_gru(const AnalysisGRULayer *gru, float *state, const float *input, int arch)
 {
    int i;
    int N, M;
@@ -111,8 +112,10 @@ void analysis_compute_gru(const AnalysisGRULayer *gru, float *state, const float
    M = gru->nb_inputs;
    N = gru->nb_neurons;
    stride = 3*N;
-#ifdef MLP_HAVE_AVX2
-   if ((N&7)==0 && N<=MAX_NEURONS && kiss_fft_use_avx2()) {
+   (void)arch;
+#ifdef ANALYSIS_HAVE_AVX2
+   if (OPUS_X86_USE_AVX2(arch) && (N&7)==0)
+   {
       analysis_compute_gru_avx2(gru, state, input);
       return;
    }

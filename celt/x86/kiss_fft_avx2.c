@@ -1,6 +1,4 @@
-/* Copyright (c) 2026 contributors
-   AVX butterflies for the float kiss_fft.
-
+/*
    Redistribution and use in source and binary forms, with or without
    modification, are permitted provided that the following conditions
    are met:
@@ -25,261 +23,257 @@
    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-/* Design notes
-   ------------
-   These kernels vectorise the radix-2/3/4/5 butterflies across the inner
-   (j/u) loop, four complex values per __m256, interleaved as r,i,r,i,...
-   Every lane performs exactly the same IEEE single-precision operations,
-   in the same order, as the scalar C macros in _kiss_fft_guts.h:
-     - complex multiply = two separate muls then add/sub (never FMA),
-     - x + (-y) is used in place of x - y only where that is exact,
-     - commuted additions (a*b + c*d vs c*d + a*b) are exact.
-   The result is bit-identical to the C path, so encoder output does not
-   change. The file is built with -mavx2 -mfma, so contraction of
-   mul+add into FMA must be disabled explicitly below. */
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
-
-#if defined(__clang__)
-#pragma clang fp contract(off)
-#elif defined(__GNUC__)
-#pragma GCC optimize ("fp-contract=off")
-#endif
-
-#include <immintrin.h>
-#include <stddef.h>
-#include "_kiss_fft_guts.h"
 #include "x86/kiss_fft_avx2.h"
 
-#define SWAP_RI(x) _mm256_permute_ps((x), 0xB1)
+#ifdef KISS_FFT_HAVE_AVX2
 
-static OPUS_INLINE __m256 sign_odd(void)
+#include "x86/float_avx2.h"
+#include "_kiss_fft_guts.h"
+
+/* The butterflies below are vectorised over the inner loop of their C
+   counterpart in kiss_fft.c (four values of j/u at a time), except the
+   radix-4 with m==1 which is vectorised over i. */
+
+/* Mask flipping the sign of the imaginary parts. */
+static OPUS_INLINE __m256 neg_imag(void)
 {
-   return _mm256_castsi256_ps(_mm256_set1_epi64x((long long)0x8000000000000000ULL));
+   return _mm256_setr_ps(0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f);
 }
 
-/* Load four twiddles tw[0], tw[s], tw[2s], tw[3s]. */
-static OPUS_INLINE __m256 ld_tw(const kiss_twiddle_cpx *tw, size_t s)
+/* x - i*y = (x.r + y.i, x.i - y.r), where x.i - y.r is computed as
+   x.i + (-y.r), which is exact. */
+static OPUS_INLINE __m256 sub_mul_i(__m256 x, __m256 y)
 {
-   __m128d lo, hi;
-   if (s == 1) return _mm256_loadu_ps((const float*)tw);
-   lo = _mm_loadh_pd(_mm_load_sd((const double*)tw), (const double*)(tw + s));
-   hi = _mm_loadh_pd(_mm_load_sd((const double*)(tw + 2*s)), (const double*)(tw + 3*s));
-   return _mm256_castpd_ps(_mm256_insertf128_pd(_mm256_castpd128_pd256(lo), hi, 1));
+   return _mm256_add_ps(x, _mm256_xor_ps(CPX_SWAP_AVX2(y), neg_imag()));
 }
 
-/* C_MUL: r = a.r*w.r - a.i*w.i ; i = a.r*w.i + a.i*w.r */
-static OPUS_INLINE __m256 cmul(__m256 a, __m256 w)
+/* x + i*y = (x.r - y.i, x.i + y.r). */
+static OPUS_INLINE __m256 add_mul_i(__m256 x, __m256 y)
 {
-   __m256 wr = _mm256_moveldup_ps(w);
-   __m256 wi = _mm256_movehdup_ps(w);
-   return _mm256_addsub_ps(_mm256_mul_ps(a, wr), _mm256_mul_ps(SWAP_RI(a), wi));
+   return _mm256_addsub_ps(x, CPX_SWAP_AVX2(y));
 }
 
-/* [x.r + y.i, x.i - y.r] */
-static OPUS_INLINE __m256 rot_a(__m256 x, __m256 y)
+/* C_MUL(a, w[0]), C_MUL(a, w[s]), C_MUL(a, w[2*s]), C_MUL(a, w[3*s]). */
+static OPUS_INLINE __m256 twiddle4(__m256 a, const kiss_twiddle_cpx *w, int s)
 {
-   return _mm256_add_ps(x, _mm256_xor_ps(SWAP_RI(y), sign_odd()));
+   __m256 tw = cpx_gather4_avx2((const float*)w, s);
+   return cpx_rot_avx2(a, _mm256_moveldup_ps(tw), _mm256_movehdup_ps(tw));
 }
 
-/* [x.r - y.i, x.i + y.r] */
-static OPUS_INLINE __m256 rot_b(__m256 x, __m256 y)
-{
-   return _mm256_addsub_ps(x, SWAP_RI(y));
-}
+#define LOAD(p) _mm256_loadu_ps((const float*)(p))
+#define STORE(p, v) _mm256_storeu_ps((float*)(p), (v))
 
-#define LD(p) _mm256_loadu_ps((const float*)(p))
-#define ST(p, v) _mm256_storeu_ps((float*)(p), (v))
-
-void kf_bfly2_avx2(kiss_fft_cpx *Fout, int N)
+/* Radix-2 with m==4, the only case the C code supports for non-custom
+   modes. Each iteration is one butterfly: Fout[0..3] with Fout[4..7]. The
+   four twiddles are 1, (1-i)/sqrt(2), -i and -(1+i)/sqrt(2). */
+static void kf_bfly2_m4(kiss_fft_cpx *Fout, int N)
 {
    int i;
-   const __m256 tw = _mm256_set1_ps(0.7071067812f);
-   const __m256 so = sign_odd();
-   for (i = 0; i < N; i++)
+   const __m256 tw = _mm256_set1_ps(.7071067812f);
+   for (i=0;i<N;i++)
    {
-      __m256 a = LD(Fout);
-      __m256 b = LD(Fout + 4);
-      __m256 bs = SWAP_RI(b);
-      __m256 p = _mm256_add_ps(b, bs);   /* [r+i, i+r] */
-      __m256 d = _mm256_sub_ps(b, bs);   /* [r-i, i-r] */
-      __m256 q = _mm256_sub_ps(bs, b);   /* [i-r, r-i] */
-      __m256 M = _mm256_blend_ps(p, d, 0xAA);                     /* [r+i, i-r] */
-      __m256 Nn = _mm256_blend_ps(q, _mm256_xor_ps(p, so), 0xAA); /* [i-r, -(i+r)] */
-      __m256 t13 = _mm256_mul_ps(_mm256_blend_ps(M, Nn, 0xF0), tw);
-      __m256 t02 = _mm256_blend_ps(b, _mm256_xor_ps(bs, so), 0xF0);
-      __m256 t = _mm256_blend_ps(t02, t13, 0xCC);
-      ST(Fout + 4, _mm256_sub_ps(a, t));
-      ST(Fout, _mm256_add_ps(a, t));
+      __m256 a = LOAD(Fout);
+      __m256 b = LOAD(Fout + 4);
+      __m256 bs = CPX_SWAP_AVX2(b);
+      /* Build t, the twiddled b, from these candidates:
+         sum = (r+i, i+r), dif = (r-i, i-r), fid = (i-r, r-i). */
+      __m256 sum = _mm256_add_ps(b, bs);
+      __m256 dif = _mm256_sub_ps(b, bs);
+      __m256 fid = _mm256_sub_ps(bs, b);
+      /* t1 = (r+i, i-r)*tw and t3 = (i-r, -(i+r))*tw, in the upper half. */
+      __m256 t13 = _mm256_blend_ps(_mm256_blend_ps(sum, dif, 0xAA),
+            _mm256_blend_ps(fid, _mm256_xor_ps(sum, neg_imag()), 0xAA), 0xF0);
+      /* t0 = (r, i) and t2 = (i, -r). */
+      __m256 t02 = _mm256_blend_ps(b, _mm256_xor_ps(bs, neg_imag()), 0xF0);
+      __m256 t = _mm256_blend_ps(t02, _mm256_mul_ps(t13, tw), 0xCC);
+      STORE(Fout + 4, _mm256_sub_ps(a, t));
+      STORE(Fout, _mm256_add_ps(a, t));
       Fout += 8;
    }
 }
 
-void kf_bfly4_avx2(kiss_fft_cpx *Fout, const size_t fstride,
-      const kiss_fft_state *st, int m, int N, int mm)
+/* Core of the radix-4 butterfly, on four butterflies at a time. f1, f2 and
+   f3 are already twiddled. */
+static OPUS_INLINE void bfly4_core(__m256 *f0, __m256 *f1, __m256 *f2, __m256 *f3)
+{
+   __m256 s5 = _mm256_sub_ps(*f0, *f2);
+   __m256 a = _mm256_add_ps(*f0, *f2);
+   __m256 s3 = _mm256_add_ps(*f1, *f3);
+   __m256 s4 = _mm256_sub_ps(*f1, *f3);
+   *f2 = _mm256_sub_ps(a, s3);
+   *f0 = _mm256_add_ps(a, s3);
+   *f1 = sub_mul_i(s5, s4);
+   *f3 = add_mul_i(s5, s4);
+}
+
+/* Transposes a 4x4 matrix of complex values. */
+static OPUS_INLINE void transpose4(__m256 *a, __m256 *b, __m256 *c, __m256 *d)
+{
+   __m256d ab_lo = _mm256_unpacklo_pd(_mm256_castps_pd(*a), _mm256_castps_pd(*b));
+   __m256d ab_hi = _mm256_unpackhi_pd(_mm256_castps_pd(*a), _mm256_castps_pd(*b));
+   __m256d cd_lo = _mm256_unpacklo_pd(_mm256_castps_pd(*c), _mm256_castps_pd(*d));
+   __m256d cd_hi = _mm256_unpackhi_pd(_mm256_castps_pd(*c), _mm256_castps_pd(*d));
+   *a = _mm256_castpd_ps(_mm256_permute2f128_pd(ab_lo, cd_lo, 0x20));
+   *b = _mm256_castpd_ps(_mm256_permute2f128_pd(ab_hi, cd_hi, 0x20));
+   *c = _mm256_castpd_ps(_mm256_permute2f128_pd(ab_lo, cd_lo, 0x31));
+   *d = _mm256_castpd_ps(_mm256_permute2f128_pd(ab_hi, cd_hi, 0x31));
+}
+
+/* Radix-4 with m==1 (no twiddles): the N butterflies are on consecutive
+   groups of four values, so do four butterflies at a time by transposing. */
+static void kf_bfly4_m1(kiss_fft_cpx *Fout, int N)
 {
    int i;
-   if (m == 1)
+   for (i=0;i+4<=N;i+=4)
    {
-      int N4 = N & ~3;
-      for (i = 0; i < N4; i += 4)
-      {
-         __m256d v0 = _mm256_castps_pd(LD(Fout));
-         __m256d v1 = _mm256_castps_pd(LD(Fout + 4));
-         __m256d v2 = _mm256_castps_pd(LD(Fout + 8));
-         __m256d v3 = _mm256_castps_pd(LD(Fout + 12));
-         __m256d t0 = _mm256_unpacklo_pd(v0, v1);
-         __m256d t1 = _mm256_unpackhi_pd(v0, v1);
-         __m256d t2 = _mm256_unpacklo_pd(v2, v3);
-         __m256d t3 = _mm256_unpackhi_pd(v2, v3);
-         __m256 c0 = _mm256_castpd_ps(_mm256_permute2f128_pd(t0, t2, 0x20));
-         __m256 c2 = _mm256_castpd_ps(_mm256_permute2f128_pd(t0, t2, 0x31));
-         __m256 c1 = _mm256_castpd_ps(_mm256_permute2f128_pd(t1, t3, 0x20));
-         __m256 c3 = _mm256_castpd_ps(_mm256_permute2f128_pd(t1, t3, 0x31));
-         __m256 s0, s1, o0, o1, o2, o3;
-         __m256d u0, u1, u2, u3;
+      __m256 f0 = LOAD(Fout);
+      __m256 f1 = LOAD(Fout + 4);
+      __m256 f2 = LOAD(Fout + 8);
+      __m256 f3 = LOAD(Fout + 12);
+      transpose4(&f0, &f1, &f2, &f3);
+      bfly4_core(&f0, &f1, &f2, &f3);
+      transpose4(&f0, &f1, &f2, &f3);
+      STORE(Fout, f0);
+      STORE(Fout + 4, f1);
+      STORE(Fout + 8, f2);
+      STORE(Fout + 12, f3);
+      Fout += 16;
+   }
+   for (;i<N;i++)
+   {
+      kiss_fft_cpx scratch0, scratch1;
+      C_SUB(scratch0, *Fout, Fout[2]);
+      C_ADDTO(*Fout, Fout[2]);
+      C_ADD(scratch1, Fout[1], Fout[3]);
+      C_SUB(Fout[2], *Fout, scratch1);
+      C_ADDTO(*Fout, scratch1);
+      C_SUB(scratch1, Fout[1], Fout[3]);
+      Fout[1].r = scratch0.r + scratch1.i;
+      Fout[1].i = scratch0.i - scratch1.r;
+      Fout[3].r = scratch0.r - scratch1.i;
+      Fout[3].i = scratch0.i + scratch1.r;
+      Fout += 4;
+   }
+}
 
-         s0 = _mm256_sub_ps(c0, c2);
-         c0 = _mm256_add_ps(c0, c2);
-         s1 = _mm256_add_ps(c1, c3);
-         o2 = _mm256_sub_ps(c0, s1);
-         o0 = _mm256_add_ps(c0, s1);
-         s1 = _mm256_sub_ps(c1, c3);
-         o1 = rot_a(s0, s1);
-         o3 = rot_b(s0, s1);
-
-         u0 = _mm256_unpacklo_pd(_mm256_castps_pd(o0), _mm256_castps_pd(o1));
-         u1 = _mm256_unpackhi_pd(_mm256_castps_pd(o0), _mm256_castps_pd(o1));
-         u2 = _mm256_unpacklo_pd(_mm256_castps_pd(o2), _mm256_castps_pd(o3));
-         u3 = _mm256_unpackhi_pd(_mm256_castps_pd(o2), _mm256_castps_pd(o3));
-         ST(Fout,      _mm256_castpd_ps(_mm256_permute2f128_pd(u0, u2, 0x20)));
-         ST(Fout + 4,  _mm256_castpd_ps(_mm256_permute2f128_pd(u1, u3, 0x20)));
-         ST(Fout + 8,  _mm256_castpd_ps(_mm256_permute2f128_pd(u0, u2, 0x31)));
-         ST(Fout + 12, _mm256_castpd_ps(_mm256_permute2f128_pd(u1, u3, 0x31)));
-         Fout += 16;
-      }
-      /* Scalar tail, identical to the C reference. */
-      for (; i < N; i++)
+static void kf_bfly4_avx2(kiss_fft_cpx *Fout, int fstride,
+      const kiss_fft_state *st, int m, int N, int mm)
+{
+   int i, j;
+   const kiss_twiddle_cpx *tw = st->twiddles;
+   for (i=0;i<N;i++)
+   {
+      kiss_fft_cpx *F = Fout + i*mm;
+      for (j=0;j<m;j+=4)
       {
-         kiss_fft_cpx scratch0, scratch1;
-         C_SUB(scratch0, *Fout, Fout[2]);
-         C_ADDTO(*Fout, Fout[2]);
-         C_ADD(scratch1, Fout[1], Fout[3]);
-         C_SUB(Fout[2], *Fout, scratch1);
-         C_ADDTO(*Fout, scratch1);
-         C_SUB(scratch1, Fout[1], Fout[3]);
-         Fout[1].r = scratch0.r + scratch1.i;
-         Fout[1].i = scratch0.i - scratch1.r;
-         Fout[3].r = scratch0.r - scratch1.i;
-         Fout[3].i = scratch0.i + scratch1.r;
-         Fout += 4;
-      }
-   } else {
-      const int m2 = 2*m, m3 = 3*m;
-      const kiss_twiddle_cpx *tw = st->twiddles;
-      kiss_fft_cpx *Fout_beg = Fout;
-      for (i = 0; i < N; i++)
-      {
-         int j;
-         Fout = Fout_beg + i*mm;
-         for (j = 0; j < m; j += 4)
-         {
-            __m256 a0 = LD(Fout + j);
-            __m256 s0 = cmul(LD(Fout + m + j),  ld_tw(tw + j*fstride,   fstride));
-            __m256 s1 = cmul(LD(Fout + m2 + j), ld_tw(tw + 2*j*fstride, 2*fstride));
-            __m256 s2 = cmul(LD(Fout + m3 + j), ld_tw(tw + 3*j*fstride, 3*fstride));
-            __m256 s5 = _mm256_sub_ps(a0, s1);
-            __m256 s3, s4;
-            a0 = _mm256_add_ps(a0, s1);
-            s3 = _mm256_add_ps(s0, s2);
-            s4 = _mm256_sub_ps(s0, s2);
-            ST(Fout + m2 + j, _mm256_sub_ps(a0, s3));
-            ST(Fout + j, _mm256_add_ps(a0, s3));
-            ST(Fout + m + j, rot_a(s5, s4));
-            ST(Fout + m3 + j, rot_b(s5, s4));
-         }
+         __m256 f0 = LOAD(F + j);
+         __m256 f1 = twiddle4(LOAD(F + m + j), tw + j*fstride, fstride);
+         __m256 f2 = twiddle4(LOAD(F + 2*m + j), tw + 2*j*fstride, 2*fstride);
+         __m256 f3 = twiddle4(LOAD(F + 3*m + j), tw + 3*j*fstride, 3*fstride);
+         bfly4_core(&f0, &f1, &f2, &f3);
+         STORE(F + j, f0);
+         STORE(F + m + j, f1);
+         STORE(F + 2*m + j, f2);
+         STORE(F + 3*m + j, f3);
       }
    }
 }
 
-void kf_bfly3_avx2(kiss_fft_cpx *Fout, const size_t fstride,
+static void kf_bfly3_avx2(kiss_fft_cpx *Fout, int fstride,
       const kiss_fft_state *st, int m, int N, int mm)
 {
-   int i;
-   const int m2 = 2*m;
+   int i, j;
    const kiss_twiddle_cpx *tw = st->twiddles;
    const __m256 epi3i = _mm256_set1_ps(st->twiddles[fstride*m].i);
    const __m256 half = _mm256_set1_ps(.5f);
-   kiss_fft_cpx *Fout_beg = Fout;
-   for (i = 0; i < N; i++)
+   for (i=0;i<N;i++)
    {
-      int j;
-      Fout = Fout_beg + i*mm;
-      for (j = 0; j < m; j += 4)
+      kiss_fft_cpx *F = Fout + i*mm;
+      for (j=0;j<m;j+=4)
       {
-         __m256 a0 = LD(Fout + j);
-         __m256 s1 = cmul(LD(Fout + m + j),  ld_tw(tw + j*fstride,   fstride));
-         __m256 s2 = cmul(LD(Fout + m2 + j), ld_tw(tw + 2*j*fstride, 2*fstride));
+         __m256 f0 = LOAD(F + j);
+         __m256 s1 = twiddle4(LOAD(F + m + j), tw + j*fstride, fstride);
+         __m256 s2 = twiddle4(LOAD(F + 2*m + j), tw + 2*j*fstride, 2*fstride);
          __m256 s3 = _mm256_add_ps(s1, s2);
-         __m256 s0 = _mm256_sub_ps(s1, s2);
-         __m256 fm = _mm256_sub_ps(a0, _mm256_mul_ps(s3, half));
-         s0 = _mm256_mul_ps(s0, epi3i);
-         ST(Fout + j, _mm256_add_ps(a0, s3));
-         ST(Fout + m2 + j, rot_a(fm, s0));
-         ST(Fout + m + j, rot_b(fm, s0));
+         __m256 s0 = _mm256_mul_ps(_mm256_sub_ps(s1, s2), epi3i);
+         __m256 fm = _mm256_sub_ps(f0, _mm256_mul_ps(s3, half));
+         STORE(F + j, _mm256_add_ps(f0, s3));
+         STORE(F + m + j, add_mul_i(fm, s0));
+         STORE(F + 2*m + j, sub_mul_i(fm, s0));
       }
    }
 }
 
-void kf_bfly5_avx2(kiss_fft_cpx *Fout, const size_t fstride,
+static void kf_bfly5_avx2(kiss_fft_cpx *Fout, int fstride,
       const kiss_fft_state *st, int m, int N, int mm)
 {
-   int i;
+   int i, u;
    const kiss_twiddle_cpx *tw = st->twiddles;
    const kiss_twiddle_cpx ya = st->twiddles[fstride*m];
    const kiss_twiddle_cpx yb = st->twiddles[fstride*2*m];
    const __m256 yar = _mm256_set1_ps(ya.r), yai = _mm256_set1_ps(ya.i);
    const __m256 ybr = _mm256_set1_ps(yb.r), ybi = _mm256_set1_ps(yb.i);
-   const __m256 so = sign_odd();
-   kiss_fft_cpx *Fout_beg = Fout;
-   for (i = 0; i < N; i++)
+   for (i=0;i<N;i++)
    {
-      int u;
-      kiss_fft_cpx *F0 = Fout_beg + i*mm;
-      kiss_fft_cpx *F1 = F0 + m, *F2 = F0 + 2*m, *F3 = F0 + 3*m, *F4 = F0 + 4*m;
-      for (u = 0; u < m; u += 4)
+      kiss_fft_cpx *F = Fout + i*mm;
+      for (u=0;u<m;u+=4)
       {
-         __m256 s0 = LD(F0 + u);
-         __m256 s1 = cmul(LD(F1 + u), ld_tw(tw + u*fstride,   fstride));
-         __m256 s2 = cmul(LD(F2 + u), ld_tw(tw + 2*u*fstride, 2*fstride));
-         __m256 s3 = cmul(LD(F3 + u), ld_tw(tw + 3*u*fstride, 3*fstride));
-         __m256 s4 = cmul(LD(F4 + u), ld_tw(tw + 4*u*fstride, 4*fstride));
+         __m256 s0 = LOAD(F + u);
+         __m256 s1 = twiddle4(LOAD(F + m + u), tw + u*fstride, fstride);
+         __m256 s2 = twiddle4(LOAD(F + 2*m + u), tw + 2*u*fstride, 2*fstride);
+         __m256 s3 = twiddle4(LOAD(F + 3*m + u), tw + 3*u*fstride, 3*fstride);
+         __m256 s4 = twiddle4(LOAD(F + 4*m + u), tw + 4*u*fstride, 4*fstride);
          __m256 s7 = _mm256_add_ps(s1, s4);
          __m256 s10 = _mm256_sub_ps(s1, s4);
          __m256 s8 = _mm256_add_ps(s2, s3);
          __m256 s9 = _mm256_sub_ps(s2, s3);
-         __m256 s5, s6, s11, s12, t, uu, vv;
+         __m256 s5, s6, s11, s12, a, b;
 
-         ST(F0 + u, _mm256_add_ps(s0, _mm256_add_ps(s7, s8)));
+         STORE(F + u, _mm256_add_ps(s0, _mm256_add_ps(s7, s8)));
 
          s5 = _mm256_add_ps(s0, _mm256_add_ps(_mm256_mul_ps(s7, yar), _mm256_mul_ps(s8, ybr)));
-         t = _mm256_add_ps(_mm256_mul_ps(s10, yai), _mm256_mul_ps(s9, ybi));
-         s6 = _mm256_xor_ps(SWAP_RI(t), so);               /* [t.i, -t.r] */
-         ST(F1 + u, _mm256_sub_ps(s5, s6));
-         ST(F4 + u, _mm256_add_ps(s5, s6));
+         /* s6 = (a.i, -a.r) with a = s10*ya.i + s9*yb.i. */
+         a = _mm256_add_ps(_mm256_mul_ps(s10, yai), _mm256_mul_ps(s9, ybi));
+         s6 = _mm256_xor_ps(CPX_SWAP_AVX2(a), neg_imag());
+         STORE(F + m + u, _mm256_sub_ps(s5, s6));
+         STORE(F + 4*m + u, _mm256_add_ps(s5, s6));
 
          s11 = _mm256_add_ps(s0, _mm256_add_ps(_mm256_mul_ps(s7, ybr), _mm256_mul_ps(s8, yar)));
-         uu = _mm256_sub_ps(_mm256_mul_ps(s9, yai), _mm256_mul_ps(s10, ybi));
-         vv = _mm256_sub_ps(_mm256_mul_ps(s10, ybi), _mm256_mul_ps(s9, yai));
-         s12 = _mm256_blend_ps(SWAP_RI(uu), SWAP_RI(vv), 0xAA); /* [uu.i, vv.r] */
-         ST(F2 + u, _mm256_add_ps(s11, s12));
-         ST(F3 + u, _mm256_sub_ps(s11, s12));
+         /* s12 = (a.i, b.r) with a = s9*ya.i - s10*yb.i and b = -a computed
+            as in the C code (not by negating a, to keep the sign of 0). */
+         a = _mm256_sub_ps(_mm256_mul_ps(s9, yai), _mm256_mul_ps(s10, ybi));
+         b = _mm256_sub_ps(_mm256_mul_ps(s10, ybi), _mm256_mul_ps(s9, yai));
+         s12 = CPX_SWAP_AVX2(_mm256_blend_ps(a, b, 0x55));
+         STORE(F + 2*m + u, _mm256_add_ps(s11, s12));
+         STORE(F + 3*m + u, _mm256_sub_ps(s11, s12));
       }
    }
+}
+
+int kf_bfly_avx2(kiss_fft_cpx *Fout, int p, size_t fstride,
+      const kiss_fft_state *st, int m, int N, int mm)
+{
+   if (p == 4 && m == 1)
+      kf_bfly4_m1(Fout, N);
+   else if (p == 2 && m == 4)
+      kf_bfly2_m4(Fout, N);
+   /* The other kernels need m to be a multiple of 4, which is always the
+      case except for custom modes. */
+   else if ((m&3) != 0)
+      return 0;
+   else if (p == 3)
+      kf_bfly3_avx2(Fout, (int)fstride, st, m, N, mm);
+   else if (p == 4)
+      kf_bfly4_avx2(Fout, (int)fstride, st, m, N, mm);
+   else if (p == 5)
+      kf_bfly5_avx2(Fout, (int)fstride, st, m, N, mm);
+   else
+      return 0;
+   return 1;
 }
 
 #endif

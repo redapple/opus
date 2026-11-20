@@ -1064,14 +1064,14 @@ static opus_int32 compute_equiv_rate(opus_int32 bitrate, int channels,
    return equiv;
 }
 
-int is_digital_silence(const opus_res* pcm, int frame_size, int channels, int lsb_depth)
+int is_digital_silence(const opus_res* pcm, int frame_size, int channels, int lsb_depth, int arch)
 {
    int silence = 0;
    opus_val32 sample_max = 0;
 #ifdef MLP_TRAINING
    return 0;
 #endif
-   sample_max = celt_maxabs_res(pcm, frame_size*channels);
+   sample_max = celt_maxabs_res(pcm, frame_size*channels, arch);
 
 #ifdef FIXED_POINT
    silence = (sample_max == 0);
@@ -1094,7 +1094,7 @@ static opus_val32 compute_frame_energy(const opus_res *pcm, int frame_size, int 
    int len = frame_size*channels;
    (void)arch;
    /* Max amplitude in the signal */
-   sample_max = RES2INT16(celt_maxabs_res(pcm, len));
+   sample_max = RES2INT16(celt_maxabs_res(pcm, len, arch));
 
    /* Compute the right shift required in the MAC to avoid an overflow */
    max_shift = celt_ilog2(len);
@@ -1250,7 +1250,7 @@ opus_int32 opus_encode_native(OpusEncoder *st, const opus_res *pcm, int frame_si
 
     if (st->application != OPUS_APPLICATION_RESTRICTED_SILK)
         celt_encoder_ctl(celt_enc, CELT_GET_MODE(&celt_mode));
-    is_silence = is_digital_silence(pcm, frame_size, st->channels, lsb_depth);
+    is_silence = is_digital_silence(pcm, frame_size, st->channels, lsb_depth, st->arch);
 #ifndef DISABLE_FLOAT_API
     analysis_info.valid = 0;
 #ifdef FIXED_POINT
@@ -1821,7 +1821,7 @@ opus_int32 opus_encode_native(OpusEncoder *st, const opus_res *pcm, int frame_si
             tonality_get_info(&st->analysis, &analysis_info, enc_frame_size);
           }
 #endif
-          is_silence = is_digital_silence(pcm+i*(st->channels*enc_frame_size), enc_frame_size, st->channels, lsb_depth);
+          is_silence = is_digital_silence(pcm+i*(st->channels*enc_frame_size), enc_frame_size, st->channels, lsb_depth, st->arch);
 
           tmp_len = opus_encode_frame_native(st, pcm+i*(st->channels*enc_frame_size), enc_frame_size, curr_data, curr_max, float_api, first_frame,
 #ifdef ENABLE_DRED

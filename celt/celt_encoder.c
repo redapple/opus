@@ -265,59 +265,61 @@ void opus_custom_encoder_destroy(CELTEncoder *st)
 
 
 #ifndef FIXED_POINT
-/* Float-only: the high-pass filter, forward-masking pass and backward-masking
-   pass of transient_analysis() for two channels in lock-step. The two
-   channels are independent recursions, so running them side by side hides the
-   latency of each chain. Every operation is the same, in the same order, as
-   in the single-channel code, so the results are bit-identical. */
-static void transient_filters_x2(const opus_val32 *in0, const opus_val32 *in1,
-      opus_val16 *tmp0, opus_val16 *tmp1, int len, opus_val16 forward_decay,
-      opus_val32 *mean, opus_val16 *maxE)
+/* The filtering part of transient_analysis() (high-pass filter, forward and
+   backward masking) for both channels of a stereo signal at once, float
+   only. Each channel is a long chain of dependent operations, so running
+   the two chains side by side hides much of their latency. Each line is the
+   same operation, in the same order, as in the single-channel code, so the
+   results are identical. */
+static void transient_filters_stereo(const float *in, int len,
+      float forward_decay, float *tmp0, float *tmp1, float mean[2], float maxE[2])
 {
-   int i, len2 = len/2;
-   opus_val32 a0=0, a1=0, b0=0, b1=0;   /* mem0, mem1 of each channel */
-   opus_val32 m0, m1;
-   opus_val16 e0, e1;
+   int i;
+   int len2 = len/2;
+   float mem0_0=0, mem1_0=0, mem0_1=0, mem1_1=0;
+   float mean_0=0, mean_1=0, maxE_0=0, maxE_1=0;
+   /* High-pass filter */
    for (i=0;i<len;i++)
    {
-      float x_0 = in0[i], x_1 = in1[i];
-      float y_0 = a0 + x_0, y_1 = a1 + x_1;
-      float o0 = a0, o1 = a1;
-      a0 = a0 - x_0 + .5f*b0;
-      a1 = a1 - x_1 + .5f*b1;
-      b0 = x_0 - o0;
-      b1 = x_1 - o1;
-      tmp0[i] = y_0;
-      tmp1[i] = y_1;
+      float x_0 = in[i], x_1 = in[i+len];
+      float mem00_0 = mem0_0, mem00_1 = mem0_1;
+      tmp0[i] = mem0_0 + x_0;
+      tmp1[i] = mem0_1 + x_1;
+      mem0_0 = mem0_0 - x_0 + .5f*mem1_0;
+      mem0_1 = mem0_1 - x_1 + .5f*mem1_1;
+      mem1_0 = x_0 - mem00_0;
+      mem1_1 = x_1 - mem00_1;
    }
    OPUS_CLEAR(tmp0, 12);
    OPUS_CLEAR(tmp1, 12);
-   m0 = m1 = 0;
-   a0 = a1 = 0;
+   /* Forward pass */
+   mem0_0 = mem0_1 = 0;
    for (i=0;i<len2;i++)
    {
       float x2_0 = tmp0[2*i]*tmp0[2*i] + tmp0[2*i+1]*tmp0[2*i+1];
       float x2_1 = tmp1[2*i]*tmp1[2*i] + tmp1[2*i+1]*tmp1[2*i+1];
-      m0 += x2_0;
-      m1 += x2_1;
-      a0 = x2_0 + (1.f-forward_decay)*a0;
-      a1 = x2_1 + (1.f-forward_decay)*a1;
-      tmp0[i] = forward_decay*a0;
-      tmp1[i] = forward_decay*a1;
+      mean_0 += x2_0;
+      mean_1 += x2_1;
+      mem0_0 = x2_0 + (1.f-forward_decay)*mem0_0;
+      mem0_1 = x2_1 + (1.f-forward_decay)*mem0_1;
+      tmp0[i] = forward_decay*mem0_0;
+      tmp1[i] = forward_decay*mem0_1;
    }
-   a0 = a1 = 0;
-   e0 = e1 = 0;
+   /* Backward pass */
+   mem0_0 = mem0_1 = 0;
    for (i=len2-1;i>=0;i--)
    {
-      a0 = tmp0[i] + 0.875f*a0;
-      a1 = tmp1[i] + 0.875f*a1;
-      tmp0[i] = 0.125f*a0;
-      tmp1[i] = 0.125f*a1;
-      e0 = MAX16(e0, 0.125f*a0);
-      e1 = MAX16(e1, 0.125f*a1);
+      mem0_0 = tmp0[i] + 0.875f*mem0_0;
+      mem0_1 = tmp1[i] + 0.875f*mem0_1;
+      tmp0[i] = 0.125f*mem0_0;
+      tmp1[i] = 0.125f*mem0_1;
+      maxE_0 = MAX16(maxE_0, 0.125f*mem0_0);
+      maxE_1 = MAX16(maxE_1, 0.125f*mem0_1);
    }
-   mean[0] = m0; mean[1] = m1;
-   maxE[0] = e0; maxE[1] = e1;
+   mean[0] = mean_0;
+   mean[1] = mean_1;
+   maxE[0] = maxE_0;
+   maxE[1] = maxE_1;
 }
 #endif
 
@@ -335,8 +337,8 @@ static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int 
    int len2;
 #ifndef FIXED_POINT
    VARDECL(opus_val16, tmp2);
-   opus_val32 pair_mean[2];
-   opus_val16 pair_maxE[2];
+   float stereo_mean[2];
+   float stereo_maxE[2];
 #endif
    /* Forward masking: 6.7 dB/ms. */
 #ifdef FIXED_POINT
@@ -388,11 +390,12 @@ static int transient_analysis(const opus_val32 * OPUS_RESTRICT in, int len, int 
 #ifndef FIXED_POINT
       if (C==2)
       {
+         /* Both channels are filtered when c==0. */
          if (c==0)
-            transient_filters_x2(in, in+len, tmp, tmp2, len, forward_decay, pair_mean, pair_maxE);
+            transient_filters_stereo(in, len, forward_decay, tmp, tmp2, stereo_mean, stereo_maxE);
          tp = c==0 ? tmp : tmp2;
-         mean = pair_mean[c];
-         maxE = pair_maxE[c];
+         mean = stereo_mean[c];
+         maxE = stereo_maxE[c];
       }
       else
 #endif
@@ -2046,8 +2049,8 @@ int celt_encode_with_ec(CELTEncoder * OPUS_RESTRICT st, const opus_res * pcm, in
 
    ALLOC(in, CC*(N+overlap), celt_sig);
 
-   sample_max=MAX32(st->overlap_max, celt_maxabs_res(pcm, CC*(N-overlap)/st->upsample));
-   st->overlap_max=celt_maxabs_res(pcm+CC*(N-overlap)/st->upsample, CC*overlap/st->upsample);
+   sample_max=MAX32(st->overlap_max, celt_maxabs_res(pcm, CC*(N-overlap)/st->upsample, st->arch));
+   st->overlap_max=celt_maxabs_res(pcm+CC*(N-overlap)/st->upsample, CC*overlap/st->upsample, st->arch);
    sample_max=MAX32(sample_max, st->overlap_max);
 #ifdef FIXED_POINT
    silence = (sample_max==0);
@@ -2417,7 +2420,7 @@ int celt_encode_with_ec(CELTEncoder * OPUS_RESTRICT st, const opus_res * pcm, in
          {
             st->spread_decision = spreading_decision(mode, X,
                   &st->tonal_average, st->spread_decision, &st->hf_average,
-                  &st->tapset_decision, pf_on&&!shortBlocks, effEnd, C, M, spread_weight);
+                  &st->tapset_decision, pf_on&&!shortBlocks, effEnd, C, M, spread_weight, st->arch);
          }
          /*printf("%d %d\n", st->tapset_decision, st->spread_decision);*/
          /*printf("%f %d %f %d\n\n", st->analysis.tonality, st->spread_decision, st->analysis.tonality_slope, st->tapset_decision);*/
