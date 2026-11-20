@@ -52,6 +52,9 @@
 #include "os_support.h"
 #include "mathops.h"
 #include "stack_alloc.h"
+#if defined(OPUS_X86_MAY_HAVE_AVX2) && !defined(FIXED_POINT)
+#include "x86/mdct_avx2.h"
+#endif
 
 #if defined(FIXED_POINT) && defined(__mips) && __mips == 32
 #include "mips/mdct_mipsr1.h"
@@ -206,6 +209,11 @@ void clt_mdct_forward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scal
 #ifdef FIXED_POINT
       opus_val32 maxval=1;
 #endif
+#ifdef MDCT_HAVE_AVX2
+      if (OPUS_X86_USE_AVX2(arch))
+         clt_mdct_prerot_avx2(yp, t, scale, st->bitrev, f2, N4);
+      else
+#endif
       for(i=0;i<N4;i++)
       {
          kiss_fft_cpx yc;
@@ -255,6 +263,11 @@ void clt_mdct_forward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scal
       kiss_fft_scalar * OPUS_RESTRICT yp2 = out+stride*(N2-1);
       const kiss_twiddle_scalar *t = &trig[0];
       /* Temp pointers to make it really clear to the compiler what we're doing */
+#ifdef MDCT_HAVE_AVX2
+      if (OPUS_X86_USE_AVX2(arch) && stride == 1)
+         clt_mdct_postrot_avx2(fp, t, yp1, N4);
+      else
+#endif
       for(i=0;i<N4;i++)
       {
          kiss_fft_scalar yr, yi;
@@ -324,6 +337,11 @@ void clt_mdct_backward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_sca
       kiss_fft_scalar * OPUS_RESTRICT yp = out+(overlap>>1);
       const kiss_twiddle_scalar * OPUS_RESTRICT t = &trig[0];
       const opus_int16 * OPUS_RESTRICT bitrev = l->kfft[shift]->bitrev;
+#ifdef MDCT_HAVE_AVX2
+      if (OPUS_X86_USE_AVX2(arch) && stride == 1)
+         clt_imdct_prerot_avx2(xp1, t, bitrev, (kiss_fft_cpx*)yp, N4);
+      else
+#endif
       for(i=0;i<N4;i++)
       {
 #if defined(ENABLE_PFA)
@@ -369,6 +387,11 @@ void clt_mdct_backward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_sca
       const kiss_twiddle_scalar *t = &trig[0];
       /* Loop to (N4+1)>>1 to handle odd N4. When N4 is odd, the
          middle pair will be computed twice. */
+#ifdef MDCT_HAVE_AVX2
+      if (OPUS_X86_USE_AVX2(arch))
+         clt_imdct_postrot_avx2(yp0, t, N4);
+      else
+#endif
       for(i=0;i<(N4+1)>>1;i++)
       {
          kiss_fft_scalar re, im, yr, yi;
@@ -406,6 +429,11 @@ void clt_mdct_backward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_sca
       const celt_coef * OPUS_RESTRICT wp1 = window;
       const celt_coef * OPUS_RESTRICT wp2 = window+overlap-1;
 
+#ifdef MDCT_HAVE_AVX2
+      if (OPUS_X86_USE_AVX2(arch))
+         clt_imdct_tdac_avx2(out, window, overlap);
+      else
+#endif
       for(i = 0; i < overlap/2; i++)
       {
          kiss_fft_scalar x1, x2;
