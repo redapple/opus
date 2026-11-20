@@ -428,7 +428,7 @@ static const float std_feature_bias[9] = {
 #endif
 
 #ifdef FIXED_POINT
-static int is_digital_silence32(const opus_val32* pcm, int frame_size, int channels, int lsb_depth)
+static int is_digital_silence32(const opus_val32* pcm, int frame_size, int channels, int lsb_depth, int arch)
 {
    int silence = 0;
    opus_val32 sample_max = 0;
@@ -439,10 +439,11 @@ static int is_digital_silence32(const opus_val32* pcm, int frame_size, int chann
 
    silence = (sample_max == 0);
    (void)lsb_depth;
+   (void)arch;
    return silence;
 }
 #else
-#define is_digital_silence32(pcm, frame_size, channels, lsb_depth) is_digital_silence(pcm, frame_size, channels, lsb_depth)
+#define is_digital_silence32(pcm, frame_size, channels, lsb_depth, arch) is_digital_silence(pcm, frame_size, channels, lsb_depth, arch)
 #endif
 
 static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt_mode, const void *x, int len, int offset, int c1, int c2, int C, int lsb_depth, downmix_func downmix)
@@ -529,7 +530,7 @@ static void tonality_analysis(TonalityAnalysisState *tonal, const CELTMode *celt
     if (tonal->write_pos>=DETECT_SIZE)
        tonal->write_pos-=DETECT_SIZE;
 
-    is_silence = is_digital_silence32(tonal->inmem, ANALYSIS_BUF_SIZE, 1, lsb_depth);
+    is_silence = is_digital_silence32(tonal->inmem, ANALYSIS_BUF_SIZE, 1, lsb_depth, tonal->arch);
 
     ALLOC(in, 480, kiss_fft_cpx);
     ALLOC(out, 480, kiss_fft_cpx);

@@ -52,6 +52,7 @@ celt/x86/analysis_avx2.h \
 celt/x86/bands_avx2.h \
 celt/x86/float_avx2.h \
 celt/x86/kiss_fft_avx2.h \
+celt/x86/mathops_avx2.h \
 celt/x86/mdct_avx2.h \
 celt/x86/pitch_sse.h \
 celt/x86/vq_sse.h \
