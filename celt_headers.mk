@@ -56,6 +56,7 @@ celt/x86/mdct_avx2.h \
 celt/x86/mlp_avx2.h \
 celt/x86/pitch_down_avx2.h \
 celt/x86/pitch_sse.h \
+celt/x86/preemph_avx2.h \
 celt/x86/vq_sse.h \
 celt/x86/x86_arch_macros.h \
 celt/x86/x86cpu.h

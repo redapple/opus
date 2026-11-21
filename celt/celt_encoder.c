@@ -50,6 +50,11 @@
 #include <stdarg.h>
 #include "celt_lpc.h"
 #include "vq.h"
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#include "x86/preemph_avx2.h"
+#endif
 
 
 #ifndef M_PI
@@ -647,6 +652,13 @@ void celt_preemphasis(const opus_res * OPUS_RESTRICT pcmp, celt_sig * OPUS_RESTR
    /* Fast path for the normal 48kHz case and no clipping */
    if (coef[1] == 0 && upsample == 1 && !clip)
    {
+#if defined(OPUS_CELT_AVX2)
+      if (N >= 16 && (CC == 1 || CC == 2) && kiss_fft_use_avx2())
+      {
+         celt_preemphasis_fast_avx2(pcmp, inp, N, CC, coef0, mem);
+         return;
+      }
+#endif
       for (i=0;i<N;i++)
       {
          celt_sig x;
