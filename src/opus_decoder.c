@@ -1242,8 +1242,11 @@ int opus_decoder_ctl(OpusDecoder *st, int request, ...)
        {
           goto bad_arg;
        }
+#ifdef ENABLE_DEEP_PLC
        ret = lpcnet_plc_load_model(&st->lpcnet, data, len);
-       ret = silk_LoadOSCEModels(silk_dec, data, len) || ret;
+#endif
+       if (silk_LoadOSCEModels(silk_dec, data, len) != 0 || ret != 0)
+          ret = OPUS_BAD_ARG;
    }
    break;
 #endif
@@ -1389,7 +1392,7 @@ int dred_decoder_load_model(OpusDREDDecoder *dec, const unsigned char *data, int
 {
     WeightArray *list;
     int ret;
-    parse_weights(&list, data, len);
+    if (parse_weights(&list, data, len) < 0) return OPUS_BAD_ARG;
     ret = init_rdovaedec(&dec->model, list);
     opus_free(list);
     if (ret == 0) dec->loaded = 1;
