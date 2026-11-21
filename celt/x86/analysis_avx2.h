@@ -4,7 +4,8 @@
 #include "opus_types.h"
 #include "kiss_fft.h"
 
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
 #define ANALYSIS_HAVE_AVX2 1
 /* Vectorised version of the per-bin phase/tonality loop in tonality_analysis()
    (bins 1..N2-1, N = 2*N2 = 480). Handles bins in groups of 8 starting at 1

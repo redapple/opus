@@ -41,7 +41,8 @@
 #include "mathops.h"
 #include "stack_alloc.h"
 #include "cpu_support.h"
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
 #include "x86/kiss_fft_avx2.h"
 #define KISS_FFT_HAVE_AVX2 1
 #endif
@@ -590,25 +591,6 @@ static void fft_downshift(kiss_fft_cpx *x, int N, int *total, int step) {
 #define fft_downshift(x, N, total, step)
 #endif
 
-#ifdef KISS_FFT_HAVE_AVX2
-/* opus_fft_impl() does not receive the arch, so cache the CPU check.
-   The race on first use is benign: every thread writes the same value. */
-int kiss_fft_use_avx2(void)
-{
-#if defined(OPUS_X86_PRESUME_AVX2)
-   return 1;
-#else
-   static volatile int cached = -1;
-   int v = cached;
-   if (v < 0) {
-      v = (opus_select_arch() & OPUS_ARCHMASK) >= 4;
-      cached = v;
-   }
-   return v;
-#endif
-}
-#endif
-
 void opus_fft_impl(const kiss_fft_state *st,kiss_fft_cpx *fout ARG_FIXED(int downshift))
 {
     int m2, m;
@@ -691,6 +673,25 @@ void opus_fft_impl(const kiss_fft_state *st,kiss_fft_cpx *fout ARG_FIXED(int dow
     fft_downshift(fout, st->nfft, &downshift, downshift);
 }
 #endif /* !ENABLE_PFA || OPUS_CUSTOM || ENABLE_DEEP_PLC */
+#endif
+
+#ifdef KISS_FFT_HAVE_AVX2
+/* opus_fft_impl() does not receive the arch, so cache the CPU check.
+   The race on first use is benign: every thread writes the same value. */
+int kiss_fft_use_avx2(void)
+{
+#if defined(OPUS_X86_PRESUME_AVX2)
+   return 1;
+#else
+   static volatile int cached = -1;
+   int v = cached;
+   if (v < 0) {
+      v = (opus_select_arch() & OPUS_ARCHMASK) >= 4;
+      cached = v;
+   }
+   return v;
+#endif
+}
 #endif
 
 void opus_fft_c(const kiss_fft_state *st,const kiss_fft_cpx *fin,kiss_fft_cpx *fout)

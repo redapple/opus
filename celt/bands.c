@@ -42,7 +42,8 @@
 #include "rate.h"
 #include "quant_bands.h"
 #include "pitch.h"
-#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2_NO_QEXT)
 #include "x86/kiss_fft_avx2.h"
 #include "x86/bands_avx2.h"
 #endif

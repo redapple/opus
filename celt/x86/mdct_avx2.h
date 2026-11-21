@@ -3,7 +3,8 @@
 
 #include "kiss_fft.h"
 
-#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && !defined(ENABLE_PFA) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "avx2_guards.h"
+#if defined(OPUS_CELT_AVX2_MDCT)
 #define MDCT_HAVE_AVX2 1
 void clt_mdct_prerot_avx2(const float *f, const float *t, float scale,
       const opus_int16 *bitrev, kiss_fft_cpx *f2, int N4);

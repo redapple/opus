@@ -34,7 +34,8 @@
 #include "opus_defines.h"
 #include "arch.h"
 #include "mlp.h"
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
 #include "x86/kiss_fft_avx2.h"
 #include "x86/mlp_avx2.h"
 #endif

@@ -10,7 +10,8 @@
 #include "config.h"
 #endif
 
-#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "avx2_guards.h"
+#if defined(OPUS_CELT_AVX2_NO_QEXT)
 
 #include <immintrin.h>
 #include "opus_types.h"

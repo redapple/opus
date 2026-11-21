@@ -3,7 +3,8 @@
 
 #include "kiss_fft.h"
 
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
 /* Runtime check; defined in kiss_fft.c (built without AVX flags). */
 int kiss_fft_use_avx2(void);
 void kf_bfly2_avx2(kiss_fft_cpx *Fout, int N);

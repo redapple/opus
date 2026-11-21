@@ -83,7 +83,8 @@ static OPUS_INLINE float fast_atan2f(float y, float x) {
 
 
 #ifndef OVERRIDE_CELT_MAXABS16
-#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2_NO_QEXT)
 /* Defined in kiss_fft.c and x86/mathops_avx2.c. */
 int kiss_fft_use_avx2(void);
 float celt_maxabs16_avx2(const float *x, int len);

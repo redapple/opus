@@ -3,7 +3,8 @@
 
 #include "../../src/mlp.h"
 
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
 #define MLP_HAVE_AVX2 1
 /* Require layer->nb_neurons % 8 == 0. Bit-identical to the C versions. */
 void analysis_compute_dense_avx2(const AnalysisDenseLayer *layer, float *output, const float *input);

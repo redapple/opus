@@ -10,7 +10,8 @@
 #include "config.h"
 #endif
 
-#if !defined(FIXED_POINT) && !defined(ENABLE_QEXT) && !defined(ENABLE_PFA) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "avx2_guards.h"
+#if defined(OPUS_CELT_AVX2_MDCT)
 
 #if defined(__clang__)
 #pragma clang fp contract(off)

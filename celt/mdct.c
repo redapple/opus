@@ -52,7 +52,8 @@
 #include "os_support.h"
 #include "mathops.h"
 #include "stack_alloc.h"
-#if !defined(FIXED_POINT) && defined(OPUS_X86_MAY_HAVE_AVX2)
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
 #include "x86/kiss_fft_avx2.h"
 #include "x86/mdct_avx2.h"
 #endif
