@@ -98,7 +98,7 @@ static OPUS_INLINE opus_val32 celt_maxabs16(const opus_val16 *x, int len)
 #endif
 
 #if defined(ENABLE_RES24) && defined(FIXED_POINT)
-static OPUS_INLINE opus_res celt_maxabs_res(const opus_res *x, int len)
+static OPUS_INLINE opus_res celt_maxabs_res_c(const opus_res *x, int len)
 {
    int i;
    opus_res maxval = 0;
@@ -113,7 +113,15 @@ static OPUS_INLINE opus_res celt_maxabs_res(const opus_res *x, int len)
    return MAX32(maxval,-minval);
 }
 #else
-#define celt_maxabs_res celt_maxabs16
+#define celt_maxabs_res_c celt_maxabs16
+#endif
+
+#if defined(OPUS_X86_MAY_HAVE_AVX2) && !defined(FIXED_POINT)
+#include "x86/mathops_avx2.h"
+#endif
+
+#ifndef OVERRIDE_CELT_MAXABS_RES
+#define celt_maxabs_res(x, len, arch) ((void)(arch), celt_maxabs_res_c(x, len))
 #endif
 
 
