@@ -636,6 +636,13 @@ static void interleave_hadamard(celt_norm *X, int N0, int stride, int hadamard)
 void haar1(celt_norm *X, int N0, int stride)
 {
    int i, j;
+#ifdef BANDS_HAVE_AVX2
+   if (kiss_fft_use_avx2())
+   {
+      haar1_avx2(X, N0, stride);
+      return;
+   }
+#endif
    N0 >>= 1;
    for (i=0;i<stride;i++)
       for (j=0;j<N0;j++)

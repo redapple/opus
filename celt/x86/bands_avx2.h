@@ -10,6 +10,10 @@
    samples with x^2*N below 0.25, 0.0625 and 0.015625. Bit-identical to the
    scalar loop. */
 void spread_count_avx2(const celt_norm *x, int N, int *tcount);
+
+/* Bit-identical to the scalar haar1() in bands.c (same multiplications and
+   additions, no FMA). */
+void haar1_avx2(celt_norm *X, int N0, int stride);
 #endif
 
 #endif
