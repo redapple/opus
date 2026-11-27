@@ -41,6 +41,11 @@
 #include "stack_alloc.h"
 #include "mathops.h"
 #include "celt_lpc.h"
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#include "x86/pitch_down_avx2.h"
+#endif
 
 static void find_best_pitch(opus_val32 *xcorr, opus_val16 *y, int len,
                             int max_pitch, int *best_pitch
@@ -109,6 +114,17 @@ static void celt_fir5(opus_val16 *x,
    int i;
    opus_val16 num0, num1, num2, num3, num4;
    opus_val32 mem0, mem1, mem2, mem3, mem4;
+#if defined(OPUS_CELT_AVX2)
+   if (N >= 16 && kiss_fft_use_avx2())
+   {
+      VARDECL(float, scratch);
+      SAVE_STACK;
+      ALLOC(scratch, N+5, float);
+      celt_fir5_avx2(x, num, N, scratch);
+      RESTORE_STACK;
+      return;
+   }
+#endif
    num0=num[0];
    num1=num[1];
    num2=num[2];
@@ -176,6 +192,12 @@ void pitch_downsample(celt_sig * OPUS_RESTRICT x[], opus_val16 * OPUS_RESTRICT x
       x_lp[0] += SHR32(x[1][offset], shift+2) + SHR32(x[1][0], shift+1);
    }
 #else
+#if defined(OPUS_CELT_AVX2)
+   if (factor == 2 && len >= 16 && kiss_fft_use_avx2())
+      pitch_downsample_front2_avx2(x[0], C==2 ? x[1] : NULL, x_lp, len);
+   else
+#endif
+   {
    for (i=1;i<len;i++)
       x_lp[i] = .25f*x[0][(factor*i-offset)] + .25f*x[0][(factor*i+offset)] + .5f*x[0][factor*i];
    x_lp[0] = .25f*x[0][offset] + .5f*x[0][0];
@@ -184,6 +206,7 @@ void pitch_downsample(celt_sig * OPUS_RESTRICT x[], opus_val16 * OPUS_RESTRICT x
       for (i=1;i<len;i++)
          x_lp[i] += .25f*x[1][(factor*i-offset)] + .25f*x[1][(factor*i+offset)] + .5f*x[1][factor*i];
       x_lp[0] += .25f*x[1][offset] + .5f*x[1][0];
+   }
    }
 #endif
    _celt_autocorr(x_lp, ac, NULL, 0,

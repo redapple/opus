@@ -34,6 +34,11 @@
 #include "opus_defines.h"
 #include "arch.h"
 #include "mlp.h"
+#include "x86/avx2_guards.h"
+#if defined(OPUS_CELT_AVX2)
+#include "x86/kiss_fft_avx2.h"
+#include "x86/mlp_avx2.h"
+#endif
 
 #define fmadd(a, b, c) ((a)*(b)+(c))
 static OPUS_INLINE float tansig_approx(float x)
@@ -75,6 +80,12 @@ void analysis_compute_dense(const AnalysisDenseLayer *layer, float *output, cons
    M = layer->nb_inputs;
    N = layer->nb_neurons;
    stride = N;
+#ifdef MLP_HAVE_AVX2
+   if ((N&7)==0 && kiss_fft_use_avx2()) {
+      analysis_compute_dense_avx2(layer, output, input);
+      return;
+   }
+#endif
    for (i=0;i<N;i++)
       output[i] = layer->bias[i];
    gemm_accum(output, layer->input_weights, N, M, stride, input);
@@ -101,6 +112,12 @@ void analysis_compute_gru(const AnalysisGRULayer *gru, float *state, const float
    M = gru->nb_inputs;
    N = gru->nb_neurons;
    stride = 3*N;
+#ifdef MLP_HAVE_AVX2
+   if ((N&7)==0 && N<=MAX_NEURONS && kiss_fft_use_avx2()) {
+      analysis_compute_gru_avx2(gru, state, input);
+      return;
+   }
+#endif
    /* Compute update gate. */
    for (i=0;i<N;i++)
       z[i] = gru->bias[i];
