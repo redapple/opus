@@ -1,0 +1,75 @@
+name: avx2-fft-matrix
+
+# Not part of the upstream patch series: this branch only adds CI that builds
+# stock and patched Opus on several CPU types, checks the output is
+# byte-identical and (on Linux) compares executed instruction counts.
+
+on:
+  push:
+    branches: [ci/avx2-fft-matrix]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Stock branch to compare against"
+        default: main
+      patch_ref:
+        description: "Branch holding the patch"
+        default: avx2-fft-upstream
+
+env:
+  BASE_REF: ${{ inputs.base_ref || 'main' }}
+  PATCH_REF: ${{ inputs.patch_ref || 'avx2-fft-upstream' }}
+
+jobs:
+  matrix:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: CPU
+        run: |
+          uname -m
+          if [ "$(uname)" = Darwin ]; then
+            sysctl -n machdep.cpu.brand_string
+          else
+            lscpu | grep -E 'Vendor ID|Model name' || true
+            grep -m1 -o -w avx2 /proc/cpuinfo || echo "no avx2"
+          fi
+
+      - name: Install valgrind
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Check out stock and patched sources
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "origin/$BASE_REF"
+          git worktree add --detach "$RUNNER_TEMP/patch" "origin/$PATCH_REF"
+
+      - name: Build
+        run: |
+          FLAGS="-O2 -ffp-contract=off"
+          cmake -S "$RUNNER_TEMP/base" -B "$RUNNER_TEMP/build-base" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$FLAGS" -DOPUS_BUILD_PROGRAMS=ON
+          cmake -S "$RUNNER_TEMP/patch" -B "$RUNNER_TEMP/build-patch" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$FLAGS" \
+            -DOPUS_BUILD_PROGRAMS=ON -DOPUS_BUILD_TESTING=ON
+          cmake --build "$RUNNER_TEMP/build-base" -j 4
+          cmake --build "$RUNNER_TEMP/build-patch" -j 4
+
+      - name: AVX2 kernel compiled in?
+        run: |
+          echo "stock:"; find "$RUNNER_TEMP/build-base" -name 'kiss_fft_avx2*' | head -3
+          echo "patched:"; find "$RUNNER_TEMP/build-patch" -name 'kiss_fft_avx2*' | head -3
+
+      - name: Unit tests (patched)
+        run: ctest --test-dir "$RUNNER_TEMP/build-patch" --output-on-failure
+
+      - name: Stock vs patched
+        run: bash .github/ci/compare.sh "$RUNNER_TEMP/build-base" "$RUNNER_TEMP/build-patch"
